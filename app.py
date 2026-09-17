@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps, ImageEnhance
 import pytesseract
 import re
 
@@ -14,53 +14,71 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-def parse_ocr_data(text):
+def preprocess_image(image):
+    """Migliora il contrasto e converte in scala di grigi per facilitare l'OCR."""
+    gray_image = ImageOps.grayscale(image)
+    enhancer = ImageEnhance.Contrast(gray_image)
+    return enhancer.enhance(2.0)
+
+def parse_ocr_data(image):
     """
-    Estrae i numeri di provino e i relativi valori (Fy/ReH, Ft/Rm, Ag/A) dal testo OCR.
-    Ignora la colonna Agt%, la cella M12 e la voce Ferriera/Produttore.
+    Estrae le righe numeriche dall'immagine ottimizzata.
+    Ignora la colonna Agt%, la cella M12 e Ferriera/Produttore.
     """
-    data = {}
+    processed_img = preprocess_image(image)
+    # --psm 6 indica a Tesseract che l'immagine è un blocco di testo/tabella uniforme
+    text = pytesseract.image_to_string(processed_img, config='--psm 6')
+    
+    rows = []
     lines = text.split('\n')
     
     for line in lines:
-        # Cerca numeri di provino a 4 o 5 cifre (es. 10379)
-        provino_match = re.search(r'\b(\d{4,6})\b', line)
-        if provino_match:
-            prov_id = provino_match.group(1)
-            # Estrae tutti i valori decimali/interi presenti nella riga
-            numbers = re.findall(r'\b\d+(?:[\.,]\d+)?\b', line)
-            # Rimuove il numero del provino stesso dalla lista dei valori
-            values = [n.replace(',', '.') for n in numbers if n != prov_id]
+        # Pulisce la riga tenendo solo numeri, punti e virgole
+        clean_line = line.strip()
+        if not clean_line:
+            continue
             
-            if len(values) >= 3:
-                # Mappatura standard delle 3 grandezze fondamentali
-                data[prov_id] = {
-                    "snervamento": float(values[0]),  # Fy / ReH
-                    "rottura": float(values[1]),      # Ft / Rm
-                    "allungamento": float(values[2])  # Ag / A
-                }
-    return data
+        # Estrae tutte le sequenze numeriche trovate nella riga
+        numbers = re.findall(r'\b\d+(?:[\.,]\d+)?\b', clean_line)
+        numbers = [n.replace(',', '.') for n in numbers]
+        
+        # Se la riga contiene almeno 3 o 4 valori numerici, la consideriamo una riga di provino validabile
+        if len(numbers) >= 3:
+            rows.append([float(n) for n in numbers])
+            
+    return rows
 
-def compare_data(dataset1, dataset2):
-    """Confronta i dataset estratte dalle immagini e rileva le sole incongruenze."""
+def compare_datasets(data1, data2):
+    """Confronta le righe estratte dalle due immagini e rileva le incongruenze."""
     discrepancies = []
     
-    # Identifica i provini comuni
-    common_keys = set(dataset1.keys()).intersection(set(dataset2.keys()))
+    if not data1 or not data2:
+        return ["⚠️ **Lettura incompleta:** Non è stato possibile estrarre tabelle numeriche da una o entrambe le immagini. Assicurati che le foto siano ben illuminate e a fuoco."]
     
-    for prov in common_keys:
-        d1 = dataset1[prov]
-        d2 = dataset2[prov]
+    # Confronta riga per riga per i provini corrispondenti
+    min_rows = min(len(data1), len(data2))
+    
+    for i in range(min_rows):
+        r1 = data1[i]
+        r2 = data2[i]
         
-        if abs(d1["snervamento"] - d2["snervamento"]) > 0.5:
-            discrepancies.append(f"🔴 **Provino {prov} — Snervamento (F_y / R_eH):** {d1['snervamento']} vs {d2['snervamento']}")
+        # Identifica l'eventuale ID provino se presente come primo numero, altrimenti usa l'indice di riga
+        provino_label = f"Riga {i+1}"
+        
+        # Prende i primi valori di confronto (es. Snervamento, Rottura, Allungamento)
+        vals1 = r1[-3:] if len(r1) >= 3 else r1
+        vals2 = r2[-3:] if len(r2) >= 3 else r2
+        
+        param_names = ["Snervamento (F_y / R_eH)", "Rottura (F_t / R_m)", "Allungamento (A_g / A)"]
+        
+        for idx in range(min(len(vals1), len(vals2))):
+            v1 = vals1[idx]
+            v2 = vals2[idx]
             
-        if abs(d1["rottura"] - d2["rottura"]) > 0.5:
-            discrepancies.append(f"🔴 **Provino {prov} — Rottura (F_t / R_m):** {d1['rottura']} vs {d2['rottura']}")
-            
-        if abs(d1["allungamento"] - d2["allungamento"]) > 0.1:
-            discrepancies.append(f"🔴 **Provino {prov} — Allungamento (A_g / A):** {d1['allungamento']}% vs {d2['allungamento']}%")
-            
+            # Soglia per scartare piccole imprecisioni di arrotondamento
+            if abs(v1 - v2) > 0.5:
+                discrepancies.append(f"🔴 **{provino_label} — {param_names[idx] if idx < 3 else 'Valore'}:** Foto 1 = `{v1}` vs Foto 2 = `{v2}`")
+                
     return discrepancies
 
 if uploaded_files:
@@ -71,20 +89,21 @@ if uploaded_files:
         with cols[idx]:
             image = Image.open(uploaded_file)
             st.image(image, caption=f"File {idx+1}: {uploaded_file.name}", use_container_width=True)
-            text = pytesseract.image_to_string(image, lang='ita+eng')
-            parsed_data = parse_ocr_data(text)
-            extracted_datasets.append(parsed_data)
+            data = parse_ocr_data(image)
+            extracted_datasets.append(data)
 
     st.markdown("---")
     st.subheader("📋 Esito Verifica Incongruenze")
 
     if len(extracted_datasets) >= 2:
-        # Confronto tra le prime due immagini caricate
-        discrepancies = compare_data(extracted_datasets[0], extracted_datasets[1])
+        discrepancies = compare_datasets(extracted_datasets[0], extracted_datasets[1])
         
         if discrepancies:
             for err in discrepancies:
-                st.error(err)
+                if "⚠️" in err:
+                    st.warning(err)
+                else:
+                    st.error(err)
         else:
             st.success("✅ Tutti i dati letti nelle immagini corrispondono perfettamente.")
     else:
