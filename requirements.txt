@@ -1,3 +1,9 @@
 streamlit
 pandas
 openpyxl
+streamlit
+pandas
+openpyxl
+easyocr
+pillow
+opencv-python-headless
