@@ -1,5 +1,5 @@
 import streamlit as st
-from PIL import Image, ImageOps, ImageEnhance
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter
 import pytesseract
 import re
 
@@ -14,70 +14,79 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
-def preprocess_image(image):
-    """Migliora il contrasto e converte in scala di grigi per facilitare l'OCR."""
-    gray_image = ImageOps.grayscale(image)
-    enhancer = ImageEnhance.Contrast(gray_image)
-    return enhancer.enhance(2.0)
+def preprocess_for_ocr(image):
+    """Applica un filtro B/N ad alto contrasto per rimuovere ombre e grana della carta."""
+    gray = ImageOps.grayscale(image)
+    # Aumenta il contrasto per marcare i numeri neri sullo sfondo bianco
+    enhanced = ImageEnhance.Contrast(gray).enhance(2.5)
+    # Binarizzazione netta (soglia)
+    threshold = 150
+    binary = enhanced.point(lambda p: 255 if p > threshold else 0)
+    return binary
 
 def parse_ocr_data(image):
-    """
-    Estrae le righe numeriche dall'immagine ottimizzata.
-    Ignora la colonna Agt%, la cella M12 e Ferriera/Produttore.
-    """
-    processed_img = preprocess_image(image)
-    # --psm 6 indica a Tesseract che l'immagine è un blocco di testo/tabella uniforme
+    """Estrae le sequenze di numeri rilevate nell'immagine."""
+    processed_img = preprocess_for_ocr(image)
+    
+    # Prova prima con psm 6 (blocco di testo), se fallisce passa a psm 11 (testo sparso)
     text = pytesseract.image_to_string(processed_img, config='--psm 6')
+    if not text.strip():
+        text = pytesseract.image_to_string(processed_img, config='--psm 11')
     
     rows = []
     lines = text.split('\n')
     
     for line in lines:
-        # Pulisce la riga tenendo solo numeri, punti e virgole
         clean_line = line.strip()
         if not clean_line:
             continue
             
-        # Estrae tutte le sequenze numeriche trovate nella riga
+        # Trova tutti i numeri (interi e decimali) isolandoli da linee o simboli della tabella
         numbers = re.findall(r'\b\d+(?:[\.,]\d+)?\b', clean_line)
         numbers = [n.replace(',', '.') for n in numbers]
         
-        # Se la riga contiene almeno 3 o 4 valori numerici, la consideriamo una riga di provino validabile
-        if len(numbers) >= 3:
-            rows.append([float(n) for n in numbers])
+        # Considera la riga valida se contiene almeno 2 valori numerici utili
+        if len(numbers) >= 2:
+            try:
+                float_vals = [float(n) for n in numbers]
+                rows.append(float_vals)
+            except ValueError:
+                continue
             
     return rows
 
 def compare_datasets(data1, data2):
-    """Confronta le righe estratte dalle due immagini e rileva le incongruenze."""
+    """Confronta i numeri estratti dalle due immagini e rileva le incongruenze."""
     discrepancies = []
     
     if not data1 or not data2:
-        return ["⚠️ **Lettura incompleta:** Non è stato possibile estrarre tabelle numeriche da una o entrambe le immagini. Assicurati che le foto siano ben illuminate e a fuoco."]
+        return ["⚠️ **Lettura incompleta:** L'OCR non è riuscito a leggere chiaramente i numeri. Prova a ritagliare l'immagine sulla sola tabella o ad aumentare la luminosità."]
     
-    # Confronta riga per riga per i provini corrispondenti
     min_rows = min(len(data1), len(data2))
+    param_names = ["Snervamento (F_y / R_eH)", "Rottura (F_t / R_m)", "Allungamento (A_g / A)"]
     
     for i in range(min_rows):
         r1 = data1[i]
         r2 = data2[i]
         
-        # Identifica l'eventuale ID provino se presente come primo numero, altrimenti usa l'indice di riga
-        provino_label = f"Riga {i+1}"
+        provino_label = f"Riga/Provino {i+1}"
         
-        # Prende i primi valori di confronto (es. Snervamento, Rottura, Allungamento)
-        vals1 = r1[-3:] if len(r1) >= 3 else r1
-        vals2 = r2[-3:] if len(r2) >= 3 else r2
+        # Confronta i valori numerici presenti nella riga
+        min_vals = min(len(r1), len(r2))
         
-        param_names = ["Snervamento (F_y / R_eH)", "Rottura (F_t / R_m)", "Allungamento (A_g / A)"]
-        
-        for idx in range(min(len(vals1), len(vals2))):
-            v1 = vals1[idx]
-            v2 = vals2[idx]
+        for idx in range(min_vals):
+            v1 = r1[idx]
+            v2 = r2[idx]
             
-            # Soglia per scartare piccole imprecisioni di arrotondamento
+            # Scarta l'eventuale ID provino se i numeri sono identici (es. 10379 == 10379)
+            if v1 == v2 and v1 > 1000:
+                provino_label = f"Provino {int(v1)}"
+                continue
+                
+            # Verifica difformità sui valori fisici
             if abs(v1 - v2) > 0.5:
-                discrepancies.append(f"🔴 **{provino_label} — {param_names[idx] if idx < 3 else 'Valore'}:** Foto 1 = `{v1}` vs Foto 2 = `{v2}`")
+                label_idx = min(idx, len(param_names) - 1)
+                discrepancies.append(f"🔴 **{provino_label} — {param_names[label_idx]}:** Foto 1 = `{v1}` vs Foto 2 = `{v2}`")
                 
     return discrepancies
 
