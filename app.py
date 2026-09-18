@@ -17,31 +17,37 @@ uploaded_files = st.file_uploader(
 
 def extract_table_from_image(image):
     """Estrae i dati strutturati usando le coordinate spaziali (X, Y) della tabella."""
-    # Pre-elaborazione pulita
     gray = ImageOps.grayscale(image)
     enhanced = ImageEnhance.Contrast(gray).enhance(2.0)
     
     # Estrae parole e coordinate con Tesseract
     data = pytesseract.image_to_data(enhanced, output_type=Output.DATAFRAME, config='--psm 6')
     
-    # Filtra via i testi vuoti
-    data = data[data.text.notnull() & (data.text.str.strip() != "")]
+    if data is None or data.empty:
+        return []
+        
+    # Forza la conversione della colonna text in stringa per evitare errori Pandas
+    data['text'] = data['text'].astype(str)
+    
+    # Filtra via i testi vuoti o nullità
+    data = data[
+        (data['text'].str.strip() != "") & 
+        (data['text'] != "nan") & 
+        (data['text'] != "None")
+    ]
     
     if data.empty:
         return []
         
     # Raggruppa per riga approssimativa (coordinata 'top' simile)
-    # Tolleranza verticale di circa 10 pixel per raggruppare elementi della stessa riga
     data['row_group'] = (data['top'] / 15).round() * 15
     
     structured_rows = []
     for _, group in data.groupby('row_group'):
-        # Ordina gli elementi della riga da sinistra a destra (coordinata 'left')
         sorted_row = group.sort_values(by='left')
         row_numbers = []
         
         for text in sorted_row['text']:
-            # Pulisce e cerca numeri decimali o interi
             clean_text = text.replace(',', '.')
             try:
                 val = float(clean_text)
@@ -49,7 +55,6 @@ def extract_table_from_image(image):
             except ValueError:
                 continue
                 
-        # Se la riga ha almeno 3 valori numerici validi, la consideriamo una riga di provino
         if len(row_numbers) >= 3:
             structured_rows.append(row_numbers)
             
@@ -71,7 +76,6 @@ def compare_tables(table1, table2):
         
         provino_label = f"Provino/Riga {i+1}"
         
-        # Prende gli ultimi valori numerici della riga (escludendo eventuali codici iniziali lunghi)
         vals1 = r1[-3:]
         vals2 = r2[-3:]
         
@@ -79,7 +83,6 @@ def compare_tables(table1, table2):
             v1 = vals1[idx]
             v2 = vals2[idx]
             
-            # Soglia di tolleranza per scartare micro-differenze di arrotondamento (0.5)
             if abs(v1 - v2) > 0.5:
                 discrepancies.append(f"🔴 **{provino_label} — {param_names[idx]}:** Registro = `{v1}` vs Stampato = `{v2}`")
                 
@@ -111,4 +114,4 @@ if uploaded_files:
         else:
             st.success("✅ Tutti i dati letti nelle immagini corrispondono perfettamente. Nessuna incongruenza.")
     else:
-        st.info("Carica almeno 2 immagini JPG (es. registro e stampato Excel) per avviare il confronto automatico.")
+        st.info("Carica almeno 2 immagini JPG per avviare il confronto automatico.")
