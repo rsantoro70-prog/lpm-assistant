@@ -1,117 +1,66 @@
 import streamlit as st
 import pandas as pd
-from PIL import Image, ImageOps, ImageEnhance
-import pytesseract
-from pytesseract import Output
+from PIL import Image
 
 st.set_page_config(page_title="LPM Assistant", layout="wide")
 
-st.title("🔬 LPM Assistant - Controllo Dati Trazione (OCR Geometrico)")
-st.write("Carica le due immagini JPG (registro cartaceo e stampato Excel) per la lettura automatica a griglia.")
+st.title("🔬 LPM Assistant - Riscontro Visivo Trazione")
+st.write("Carica le due foto JPEG (registro cartaceo e stampato Excel) per il confronto diretto.")
 
+# Caricamento delle foto JPEG
 uploaded_files = st.file_uploader(
-    "Carica i file JPG del verbale e dello stampato Excel", 
+    "Carica esattamente 2 file JPEG", 
     type=["jpg", "jpeg", "png"], 
     accept_multiple_files=True
 )
 
-def extract_table_from_image(image):
-    """Estrae i dati strutturati usando le coordinate spaziali (X, Y) della tabella."""
-    gray = ImageOps.grayscale(image)
-    enhanced = ImageEnhance.Contrast(gray).enhance(2.0)
-    
-    # Estrae parole e coordinate con Tesseract
-    data = pytesseract.image_to_data(enhanced, output_type=Output.DATAFRAME, config='--psm 6')
-    
-    if data is None or data.empty:
-        return []
-        
-    # Forza la conversione della colonna text in stringa per evitare errori Pandas
-    data['text'] = data['text'].astype(str)
-    
-    # Filtra via i testi vuoti o nullità
-    data = data[
-        (data['text'].str.strip() != "") & 
-        (data['text'] != "nan") & 
-        (data['text'] != "None")
-    ]
-    
-    if data.empty:
-        return []
-        
-    # Raggruppa per riga approssimativa (coordinata 'top' simile)
-    data['row_group'] = (data['top'] / 15).round() * 15
-    
-    structured_rows = []
-    for _, group in data.groupby('row_group'):
-        sorted_row = group.sort_values(by='left')
-        row_numbers = []
-        
-        for text in sorted_row['text']:
-            clean_text = text.replace(',', '.')
-            try:
-                val = float(clean_text)
-                row_numbers.append(val)
-            except ValueError:
-                continue
-                
-        if len(row_numbers) >= 3:
-            structured_rows.append(row_numbers)
-            
-    return structured_rows
+if uploaded_files and len(uploaded_files) >= 2:
+    # Mostra le foto affiancate per il riscontro visivo immediato
+    col1, col2 = st.columns(2)
+    with col1:
+        st.image(uploaded_files[0], caption=f"Documento 1: {uploaded_files[0].name}", use_container_width=True)
+    with col2:
+        st.image(uploaded_files[1], caption=f"Documento 2: {uploaded_files[1].name}", use_container_width=True)
 
-def compare_tables(table1, table2):
-    """Confronta le tabelle estratte e individua le difformità."""
-    discrepancies = []
-    
-    if not table1 or not table2:
-        return ["⚠️ **Attenzione:** Impossibile estrarre la griglia numerica da una delle due immagini. Assicurati che l'inquadratura prenda bene la tabella dei provini."]
-        
-    min_rows = min(len(table1), len(table2))
-    param_names = ["Snervamento (F_y / R_eH)", "Rottura (F_t / R_m)", "Allungamento (A_g / A)"]
-    
-    for i in range(min_rows):
-        r1 = table1[i]
-        r2 = table2[i]
-        
-        provino_label = f"Provino/Riga {i+1}"
-        
-        vals1 = r1[-3:]
-        vals2 = r2[-3:]
-        
-        for idx in range(3):
-            v1 = vals1[idx]
-            v2 = vals2[idx]
-            
-            if abs(v1 - v2) > 0.5:
-                discrepancies.append(f"🔴 **{provino_label} — {param_names[idx]}:** Registro = `{v1}` vs Stampato = `{v2}`")
-                
-    return discrepancies
+    st.markdown("---")
+    st.subheader("📝 Tabella di Controllo Rapido dei Provini")
+    st.write("Inserisci i valori letti dalle foto per verificare la corrispondenza (Regola: ignora Agt%, cella M12 e Ferriera).")
 
-if uploaded_files:
-    cols = st.columns(len(uploaded_files))
-    extracted_tables = []
-    
-    for idx, uploaded_file in enumerate(uploaded_files):
-        with cols[idx]:
-            image = Image.open(uploaded_file)
-            st.image(image, caption=f"File {idx+1}: {uploaded_file.name}", use_container_width=True)
-            table_data = extract_table_from_image(image)
-            extracted_tables.append(table_data)
+    # Tabella interattiva precompilata per inserire i dati osservati nelle foto
+    df_input = pd.DataFrame([
+        {"Provino": 10379, "Doc1_Fy": 0.0, "Doc2_Fy": 0.0, "Doc1_Ft": 0.0, "Doc2_Ft": 0.0, "Doc1_Ag": 0.0, "Doc2_Ag": 0.0},
+        {"Provino": 10380, "Doc1_Fy": 0.0, "Doc2_Fy": 0.0, "Doc1_Ft": 0.0, "Doc2_Ft": 0.0, "Doc1_Ag": 0.0, "Doc2_Ag": 0.0},
+        {"Provino": 10381, "Doc1_Fy": 0.0, "Doc2_Fy": 0.0, "Doc1_Ft": 0.0, "Doc2_Ft": 0.0, "Doc1_Ag": 0.0, "Doc2_Ag": 0.0},
+    ])
+
+    edited_table = st.data_editor(df_input, num_rows="dynamic", key="jpeg_verification_grid")
 
     st.markdown("---")
     st.subheader("📋 Esito Verifica Incongruenze")
 
-    if len(extracted_tables) >= 2:
-        discrepancies = compare_tables(extracted_tables[0], extracted_tables[1])
+    discrepancies = []
+
+    # Controllo matematico istantaneo sui dati inseriti dall'utente guardando le foto
+    for idx, row in edited_table.iterrows():
+        prov = int(row["Provino"]) if pd.notna(row["Provino"]) else f"Riga {idx+1}"
         
-        if discrepancies:
-            for err in discrepancies:
-                if "⚠️" in err:
-                    st.warning(err)
-                else:
-                    st.error(err)
-        else:
-            st.success("✅ Tutti i dati letti nelle immagini corrispondono perfettamente. Nessuna incongruenza.")
+        # Snervamento (Fy / ReH)
+        if row["Doc1_Fy"] != row["Doc2_Fy"] and (row["Doc1_Fy"] > 0 or row["Doc2_Fy"] > 0):
+            discrepancies.append(f"🔴 **Provino {prov} — Snervamento (F_y / R_eH):** Doc 1 = `{row['Doc1_Fy']}` vs Doc 2 = `{row['Doc2_Fy']}`")
+            
+        # Rottura (Ft / Rm)
+        if row["Doc1_Ft"] != row["Doc2_Ft"] and (row["Doc1_Ft"] > 0 or row["Doc2_Ft"] > 0):
+            discrepancies.append(f"🔴 **Provino {prov} — Rottura (F_t / R_m):** Doc 1 = `{row['Doc1_Ft']}` vs Doc 2 = `{row['Doc2_Ft']}`")
+            
+        # Allungamento (Ag / A)
+        if row["Doc1_Ag"] != row["Doc2_Ag"] and (row["Doc1_Ag"] > 0 or row["Doc2_Ag"] > 0):
+            discrepancies.append(f"🔴 **Provino {prov} — Allungamento (A_g / A):** Doc 1 = `{row['Doc1_Ag']}%` vs Doc 2 = `{row['Doc2_Ag']}%`")
+
+    if discrepancies:
+        for err in discrepancies:
+            st.error(err)
     else:
-        st.info("Carica almeno 2 immagini JPG per avviare il confronto automatico.")
+        st.success("✅ Tutti i dati inseriti corrispondono perfettamente. Nessuna incongruenza.")
+
+else:
+    st.info("📂 Carica esattamente 2 file JPEG (es. il registro cartaceo e lo stampato) per avviare la sessione di riscontro visivo.")
